@@ -80,9 +80,13 @@ public:
         }
 
         // Aim to reach target exactly if within one interval reach
-        double max_safe_speed = v_max * 0.999; // small margin for numerical safety
+        double max_safe_speed = v_max * 0.98; // small margin for numerical safety
         double desired_speed = dist / TIME_INTERVAL;
         double base_speed = desired_speed < max_safe_speed ? desired_speed : max_safe_speed;
+        // Apply caution if last step had any warnings (global)
+        if (monitor->get_warning()) {
+            base_speed *= (id == 0 ? 0.9 : 0.65);
+        }
 
         Vec dir = to_tar.normalize();
         Vec preferred = dir * base_speed;
@@ -90,12 +94,14 @@ public:
         // Add soft repulsion from nearby robots to reduce future conflicts
         Vec repel(0.0, 0.0);
         int n = monitor->get_robot_number();
+        int nearest = -1; double nearest_d = 1e100; Vec nearest_dp;
         for (int j = 0; j < n; ++j) {
             if (j == id) continue;
             Vec pj = monitor->get_pos_cur(j);
             double rj = monitor->get_r(j);
             Vec dp = pos_cur - pj;
             double d = dp.norm();
+            if (d < nearest_d) { nearest_d = d; nearest = j; nearest_dp = dp; }
             double safe = r + rj + 0.5 * v_max * TIME_INTERVAL;
             if (d < safe && d > 1e-6) {
                 // Repulsion magnitude grows as distance falls under safe radius
@@ -104,6 +110,23 @@ public:
             }
         }
         Vec steer = preferred + repel * (v_max * 0.3);
+        // Tangential bias to steer around the nearest robot when heading towards it
+        if (nearest >= 0) {
+            if (nearest_dp.dot(dir) < 0) {
+                Vec tang_right(-nearest_dp.y, nearest_dp.x);
+                Vec tang_left(nearest_dp.y, -nearest_dp.x);
+                tang_right = tang_right.normalize() * (v_max * 0.25);
+                tang_left = tang_left.normalize() * (v_max * 0.25);
+                // pick the tangential that seems safer
+                Vec cand_r = steer + tang_right;
+                Vec cand_l = steer + tang_left;
+                bool safe_r = candidate_safe(cand_r);
+                bool safe_l = candidate_safe(cand_l);
+                if (safe_r && !safe_l) steer = cand_r;
+                else if (safe_l && !safe_r) steer = cand_l;
+                else if (safe_r && safe_l) steer = (cand_r.norm() < cand_l.norm() ? cand_r : cand_l);
+            }
+        }
         // Clip to speed limit
         double steer_norm = steer.norm();
         if (steer_norm > v_max) steer = steer * (v_max / steer_norm);

@@ -85,9 +85,31 @@ public:
         double base_speed = desired_speed < max_safe_speed ? desired_speed : max_safe_speed;
 
         Vec dir = to_tar.normalize();
-        Vec best = dir * base_speed;
+        Vec preferred = dir * base_speed;
 
-        // If straight-line motion risks collision (based on last known velocities),
+        // Add soft repulsion from nearby robots to reduce future conflicts
+        Vec repel(0.0, 0.0);
+        int n = monitor->get_robot_number();
+        for (int j = 0; j < n; ++j) {
+            if (j == id) continue;
+            Vec pj = monitor->get_pos_cur(j);
+            double rj = monitor->get_r(j);
+            Vec dp = pos_cur - pj;
+            double d = dp.norm();
+            double safe = r + rj + 0.5 * v_max * TIME_INTERVAL;
+            if (d < safe && d > 1e-6) {
+                // Repulsion magnitude grows as distance falls under safe radius
+                double strength = (safe - d) / safe;
+                repel += dp * (strength / d);
+            }
+        }
+        Vec steer = preferred + repel * (v_max * 0.3);
+        // Clip to speed limit
+        double steer_norm = steer.norm();
+        if (steer_norm > v_max) steer = steer * (v_max / steer_norm);
+        Vec best = steer;
+
+        // If planned motion risks collision (based on last known velocities),
         // try reduced speeds down to full stop.
         if (!candidate_safe(best)) {
             static const double factors[] = {0.8, 0.6, 0.4, 0.2, 0.0};
@@ -121,4 +143,3 @@ public:
 
 
 #endif // PPCA_SRC_HPP
-
